@@ -23,7 +23,13 @@ chmod +x /usr/bin/dns_smart_probe.sh
 chmod +x /usr/bin/dns_smart_apply.sh
 chmod +x /etc/init.d/dns-smart-routing
 
-# Start service
+# Configure dnsmasq safely (no duplicate lines)
+if [ -f /etc/dnsmasq.conf ]; then
+    sed -i '/servers-file=\/tmp\/dnsmasq_dynamic_servers.conf/d' /etc/dnsmasq.conf
+    echo "servers-file=/tmp/dnsmasq_dynamic_servers.conf" >> /etc/dnsmasq.conf
+fi
+
+# Enable and start service
 /etc/init.d/dns-smart-routing enable
 /etc/init.d/dns-smart-routing start
 

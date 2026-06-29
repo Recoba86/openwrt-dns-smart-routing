@@ -1,39 +1,41 @@
-# سیستم مسیریابی هوشمند دی‌ان‌اس (dns-smart-routing) برای OpenWRT
+# dns-smart-routing
 
-یک سرویس سبک و پایدار برای بررسی کیفیت و حل خودکار اختلالات دی‌ان‌اس (DNS Hijacking, Timeout, Poisoning) در روترهای OpenWRT (بهینه‌سازی شده برای شبکه‌های دارای محدودیت و اختلال مانند ایران).
+A lightweight DNS smart routing system for OpenWRT routers. It dynamically detects domain resolution issues (timeouts, basic DNS poisoning/hijacks) and adjusts dnsmasq upstream resolvers dynamically to maintain DNS reliability.
 
-## ۱. مشکل مورد هدف
-در برخی شبکه‌ها:
-- حل دی‌ان‌اس دامنه‌های خارجی با شکست مواجه می‌شود.
-- پدیده ربودن دی‌ان‌اس (DNS Hijacking) یا مسموم‌سازی (DNS Poisoning) اتفاق می‌افتد.
-- پاسخ‌دهی دی‌ان‌اس بسیار کند یا منقطع است.
-- دسترسی به برخی وب‌سایت‌ها به دلیل عدم پاسخ‌دهی دی‌ان‌اس ناممکن می‌شود با وجود اینکه اینترنت برقرار است.
+## Problems Solved
+- **DNS Instability**: Unstable or intermittent DNS resolution in restricted networks.
+- **DNS Timeout**: High latency or dropped queries when resolving external domains.
+- **DNS Poisoning**: Basic detection of tampered or hijacked DNS responses.
 
-این ابزار فقط و فقط مشکلات پایداری حل دی‌ان‌اس را حل می‌کند.
+## What it does NOT do
+- ❌ NOT a VPN
+- ❌ NOT a proxy or bypass tool
+- ❌ Does NOT change routing tables
+- ❌ Does NOT modify firewall rules (iptables/nftables)
 
-## ۲. کارهایی که این ابزار انجام می‌دهد
-- بررسی دوره‌ای سلامت دی‌ان‌اس بر روی دامنه‌های کلیدی.
-- سنجش تاخیر پاسخ‌دهی و نرخ موفقیت/شکست دی‌ان‌اس.
-- تغییر خودکار و پویای دی‌ان‌اس سیستم بین دی‌ان‌اس پیش‌فرض WAN و دی‌ان‌اس محلی (مانند Xray DNS یا Passwall).
-- کنترل نوسان (Hysteresis & Cooldown) برای جلوگیری از سوییچ‌های مکرر و ایجاد پایداری.
+## How it works
 
-## ۳. کارهایی که این ابزار انجام نمی‌دهد
-این ابزار به هیچ وجه شامل موارد زیر نیست و تغییری در آن‌ها ایجاد نمی‌کند:
-- ❌ هیچ‌گونه قابلیت VPN ندارد.
-- ❌ پروکسی یا تونل ایجاد نمی‌کند.
-- ❌ تغییری در قوانین فایروال (nftables/iptables) نمی‌دهد.
-- ❌ تغییری در جداول مسیریابی سیستم (IP routing/NAT) ایجاد نمی‌کند.
+```text
+  [ Cron Check (Every 1m) ]
+              │
+              ▼
+    [ Probe DNS Servers ] ──► (Resolves google.com, cloudflare.com, bamkhodro.com)
+              │
+              ▼
+   [ Hysteresis Decision ] ──► (4 Fails -> Xray/Local DNS; 8 Successes -> Default DNS)
+              │
+              ▼
+   [ SIGHUP Reload dnsmasq ] ──► (Atomic update of servers-file)
+```
 
-## ۴. سیستم چگونه کار می‌کند
-- **بررسی (Probe)**: هر دقیقه دامنه‌های `google.com` و `cloudflare.com` و `bamkhodro.com` بررسی می‌شوند.
-- **اندازه‌گیری (Measure)**: میزان تاخیر پاسخ و موفقیت ثبت می‌شود.
-- **تصمیم (Decide)**: در صورت بروز ۴ خطای متوالی، وضعیت به `local` تغییر می‌یابد. در صورت ثبت ۸ موفقیت متوالی (تاخیر زیر ۳۰۰ میلی‌ثانیه)، وضعیت به حالت مستقیم `default` باز می‌گردد.
-- **اعمال (Apply)**: تغییرات به صورت اتمیک اعمال شده و سرورهای دی‌ان‌اس dnsmasq با سیگنال `SIGHUP` بازنشانی می‌شوند (بدون ری‌استارت شدن پروسس اصلی).
-
-## ۵. نحوه نصب
-اجرای اسکریپت نصب به صورت محلی در مسیر پروژه:
+## Installation
 
 ```bash
 chmod +x install.sh
 ./install.sh
 ```
+
+## Safety Guarantees
+- Idempotent configuration management.
+- Cooldown period (120s minimum) to prevent route flapping.
+- Zero network interruptions (only dnsmasq configuration reload occurs).
