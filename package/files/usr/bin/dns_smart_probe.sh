@@ -157,7 +157,9 @@ last_eval_time=$(printf '%d'   "$last_eval_time"   2>/dev/null || echo "0")
 # Commit evaluation only when 2 consecutive identical results occur within
 # NOISE_WINDOW_SECS. Single samples are discarded (no state update).
 eval_confirmed=0
-if [ "$last_eval_result" -eq "$failed" ] 2>/dev/null; then
+l1=$(printf '%d' "${last_eval_result:-0}" 2>/dev/null || echo 0)
+l2=$(printf '%d' "${failed:-0}" 2>/dev/null || echo 0)
+if [ "$l1" -eq "$l2" ] 2>/dev/null; then
     time_since=$((now - last_eval_time))
     if [ $time_since -ge 0 ] && [ $time_since -le $NOISE_WINDOW_SECS ]; then
         eval_confirmed=1
@@ -195,10 +197,15 @@ else
     fail_count=0
 fi
 
-# ── TIME DECAY: expire stale failure count after FAIL_EXPIRE_SECS ─────────────
-if [ $failed -eq 0 ] && [ $fail_count -gt 0 ] && [ $last_fail_time -gt 0 ]; then
-    age=$((now - last_fail_time))
-    [ $age -ge $FAIL_EXPIRE_SECS ] && fail_count=0
+local_failed=$(printf '%d' "${failed:-0}" 2>/dev/null || echo 0)
+local_fail_count=$(printf '%d' "${fail_count:-0}" 2>/dev/null || echo 0)
+local_last_fail_time=$(printf '%d' "${last_fail_time:-0}" 2>/dev/null || echo 0)
+local_now=$(printf '%d' "${now:-0}" 2>/dev/null || echo 0)
+local_expire=$(printf '%d' "${FAIL_EXPIRE_SECS:-300}" 2>/dev/null || echo 300)
+
+if [ "$local_failed" = "0" ] && [ "$local_fail_count" -gt 0 ] 2>/dev/null; then
+    age=$((local_now - local_last_fail_time))
+    [ $age -ge $local_expire ] && fail_count=0
 fi
 
 # ── RAW DESIRED STATE ─────────────────────────────────────────────────────────
