@@ -112,45 +112,22 @@ _get_valid_ips() {
     echo "$result"
 }
 
-# Returns 0 (consensus) when BOTH resolvers return at least one valid IP.
-# Degraded = one resolver returns valid IPs, the other returns none (hijack/poison).
-# Exact IP matching is NOT used: CDN Anycast deliberately returns different IPs
-# per resolver (geoDNS). The signal we detect is a resolver going dark/poisoned.
-_resolvers_agree() {
-    local ips1="$1" ips2="$2"
-    [ -n "$ips1" ] && [ -n "$ips2" ] && return 0
-    return 1
-}
-
-# ── EVALUATION LOOP: availability-based consensus model ──────────────────────
-# Domain OK only if BOTH resolvers return at least one valid non-poisoned IP
-# AND at least one resolver responds within 400ms.
-# Degraded (one resolver dark/poisoned) → treat as failure candidate.
+# ── EVALUATION LOOP: availability-based DNS check ────────────────────────────
+# FAILED if: either resolver returns no valid IPv4, or nslookup fails/times out.
+# OK if: BOTH resolvers return at least one valid IPv4 (no further comparison).
 DOMAINS="google.com cloudflare.com"
 failed=0
 now=$(date +%s 2>/dev/null || echo "0")
 
 for domain in $DOMAINS; do
-    t0=$(awk '{printf "%d", $1 * 1000}' /proc/uptime 2>/dev/null || echo "0")
     out1=$(nslookup "$domain" "1.1.1.1" 2>/dev/null)
-    t1=$(awk '{printf "%d", $1 * 1000}' /proc/uptime 2>/dev/null || echo "0")
     out2=$(nslookup "$domain" "8.8.8.8" 2>/dev/null)
-    t2=$(awk '{printf "%d", $1 * 1000}' /proc/uptime 2>/dev/null || echo "0")
 
     ips1=$(_get_valid_ips "$out1")
     ips2=$(_get_valid_ips "$out2")
 
-    # Latency gate: at least one resolver must respond under 400ms
-    lat1=$((t1 - t0))
-    lat2=$((t2 - t1))
-    if [ $lat1 -gt 400 ] && [ $lat2 -gt 400 ]; then
-        failed=1
-        break
-    fi
-
-    # Consensus: both resolvers must return at least one valid IP.
-    # One resolver returning nothing while the other succeeds = degraded/poisoned.
-    if ! _resolvers_agree "$ips1" "$ips2"; then
+    # Both resolvers must return at least one valid IPv4
+    if [ -z "$ips1" ] || [ -z "$ips2" ]; then
         failed=1
         break
     fi
