@@ -4,37 +4,25 @@ START=95
 USE_PROCD=1
 
 STATE_DIR="/etc/dns-smart-routing"
-LOCKFILE="/tmp/dns-smart-routing.lock"
-BOOTID_FILE="/tmp/dns-smart-routing.bootid"
 MARKER="$STATE_DIR/.installed"
 DNSMASQ_RELOAD_MARKER="/tmp/dnsmasq-dns-smart-reloaded"
 
-# ── BOOT EPOCH ────────────────────────────────────────────────────────────────
-_write_bootid() {
-    local now uptime_int
-    now=$(date +%s 2>/dev/null || echo "0")
-    uptime_int=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null || echo "0")
-    printf '%s\n' "$((now - uptime_int))" > "$BOOTID_FILE" 2>/dev/null || true
-}
-
-# ── DNSMASQ CONF INTEGRATION (atomic, idempotent) ────────────────────────────
 _dnsmasq_conf_add() {
     local line="servers-file=/tmp/dnsmasq_dynamic_servers.conf"
     local conf="/etc/dnsmasq.conf"
     [ ! -f "$conf" ] && return 1
-    grep -q "$line" "$conf" && return 0  # Already present — no-op
+    grep -q "$line" "$conf" && return 0
 
     local tmp="${conf}.tmp"
     grep -v "servers-file=/tmp/dnsmasq_dynamic_servers.conf" "$conf" > "$tmp" 2>/dev/null \
         && printf '%s\n' "$line" >> "$tmp" 2>/dev/null \
         && mv "$tmp" "$conf" 2>/dev/null \
         || { rm -f "$tmp" 2>/dev/null; return 1; }
-    return 2  # 2 = line was added (caller may need to restart dnsmasq)
+    return 2
 }
 
-# ── CRON INTEGRATION (marker-guarded; written exactly once) ──────────────────
 _cron_add() {
-    [ -f "$MARKER" ] && return 0  # Installed marker present — skip unconditionally
+    [ -f "$MARKER" ] && return 0
 
     local entry="*/1 * * * * /usr/bin/dns_smart_probe.sh && /usr/bin/dns_smart_apply.sh"
     local crontab="/etc/crontabs/root"
@@ -65,39 +53,24 @@ _cron_remove() {
 }
 
 start_service() {
-    # ── BOOT SAFETY: write stable boot epoch ID ───────────────────────────────
-    _write_bootid
-
-    # ── BOOT SAFETY: clear stale lock from previous boot ─────────────────────
-    rm -f "$LOCKFILE" 2>/dev/null
-
     mkdir -p "$STATE_DIR" 2>/dev/null
 
-    # ── STATE FILE: init if missing or corrupt ────────────────────────────────
     local sf="$STATE_DIR/state.json"
-    local need_init=0
-    { [ ! -f "$sf" ] || [ ! -s "$sf" ]; } && need_init=1
-    [ $need_init -eq 0 ] && ! jq -e . "$sf" >/dev/null 2>&1 && need_init=1
-    if [ $need_init -eq 1 ]; then
-        printf '{"state":"NORMAL","fail_count":0,"ok_count":0,"last_change":0,"last_fail_time":0,"pending_state":"","pending_count":0,"last_eval_result":-1,"last_eval_time":0}\n' \
-            > "$sf" 2>/dev/null
+    if [ ! -f "$sf" ] || [ ! -s "$sf" ]; then
+        printf '{"state":"NORMAL"}\n' > "$sf" 2>/dev/null
     fi
 
-    # ── DNSMASQ: ensure servers-file exists; restart AT MOST ONCE ────────────
     touch /tmp/dnsmasq_dynamic_servers.conf 2>/dev/null
 
     _dnsmasq_conf_add
     local add_rc=$?
-    # Restart dnsmasq only if the line was newly added AND we haven't restarted yet this boot
     if [ $add_rc -eq 2 ] && [ ! -f "$DNSMASQ_RELOAD_MARKER" ]; then
         touch "$DNSMASQ_RELOAD_MARKER" 2>/dev/null
         /etc/init.d/dnsmasq restart 2>/dev/null || true
     elif [ ! -f "$DNSMASQ_RELOAD_MARKER" ]; then
-        # Line was already present — still mark to prevent future redundant restarts
         touch "$DNSMASQ_RELOAD_MARKER" 2>/dev/null
     fi
 
-    # ── CRON: install exactly once (marker-guarded) ───────────────────────────
     _cron_add
 }
 
