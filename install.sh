@@ -2,46 +2,36 @@
 
 echo "Installing dns-smart-routing..."
 
-# Verify opkg is available
+# Require opkg
 if ! which opkg >/dev/null 2>&1; then
-    echo "Error: opkg is not available on this system. Aborting."
+    echo "Error: opkg not found. Run this on an OpenWRT router."
     exit 1
 fi
 
-# Install jq dependency only if missing
+# Install jq only if missing
 if ! which jq >/dev/null 2>&1; then
-    opkg update
-    opkg install jq
+    echo "Installing jq dependency..."
+    opkg update && opkg install jq || {
+        echo "Error: failed to install jq. Aborting."
+        exit 1
+    }
 fi
 
-# Create directories
-mkdir -p /etc/dns-smart-routing
-mkdir -p /usr/bin
-mkdir -p /etc/init.d
-mkdir -p /etc/config
+# Create required directories
+mkdir -p /etc/dns-smart-routing /usr/bin /etc/init.d /etc/config
 
-# Copy files
-cp package/files/usr/bin/dns_smart_probe.sh /usr/bin/
-cp package/files/usr/bin/dns_smart_apply.sh /usr/bin/
-cp package/files/etc/init.d/dns-smart-routing /etc/init.d/
-cp package/files/etc/config/dns-smart-routing /etc/config/
+# Install scripts
+cp package/files/usr/bin/dns_smart_probe.sh /usr/bin/dns_smart_probe.sh
+cp package/files/usr/bin/dns_smart_apply.sh /usr/bin/dns_smart_apply.sh
+cp package/files/etc/init.d/dns-smart-routing /etc/init.d/dns-smart-routing
+cp package/files/etc/config/dns-smart-routing /etc/config/dns-smart-routing
 
-# Make executable
-chmod +x /usr/bin/dns_smart_probe.sh
-chmod +x /usr/bin/dns_smart_apply.sh
-chmod +x /etc/init.d/dns-smart-routing
+chmod +x /usr/bin/dns_smart_probe.sh \
+         /usr/bin/dns_smart_apply.sh \
+         /etc/init.d/dns-smart-routing
 
-# Configure dnsmasq safely (no duplicate lines)
-if [ -f /etc/dnsmasq.conf ]; then
-    sed -i '/servers-file=\/tmp\/dnsmasq_dynamic_servers.conf/d' /etc/dnsmasq.conf
-    echo "servers-file=/tmp/dnsmasq_dynamic_servers.conf" >> /etc/dnsmasq.conf
-fi
-
-# Enable and start service (handles cron entry registration idempotently)
+# Enable and start service (handles dnsmasq + cron registration idempotently)
 /etc/init.d/dns-smart-routing enable
 /etc/init.d/dns-smart-routing start
 
-# Restart dnsmasq once at the end
-/etc/init.d/dnsmasq restart
-
-echo "dns-smart-routing installed successfully!"
+echo "dns-smart-routing installed successfully."

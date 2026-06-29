@@ -3,46 +3,79 @@
 START=95
 USE_PROCD=1
 
-start_service() {
-    # Clean stale lockfile on startup
-    rm -f /tmp/dns-smart-routing.lock
+LOCKDIR="/tmp/dns-smart-routing.lock"
 
-    # Ensure directories exist
+_dnsmasq_conf_add() {
+    local line="servers-file=/tmp/dnsmasq_dynamic_servers.conf"
+    local conf="/etc/dnsmasq.conf"
+    [ ! -f "$conf" ] && return
+
+    # Already present — do nothing
+    grep -q "$line" "$conf" && return
+
+    # Atomic write: remove any stale entries, append cleanly
+    local tmp="${conf}.tmp"
+    grep -v "servers-file=/tmp/dnsmasq_dynamic_servers.conf" "$conf" > "$tmp" \
+        && printf '%s\n' "$line" >> "$tmp" \
+        && mv "$tmp" "$conf" \
+        || rm -f "$tmp"
+}
+
+_cron_add() {
+    local entry="*/1 * * * * /usr/bin/dns_smart_probe.sh && /usr/bin/dns_smart_apply.sh"
+    local crontab="/etc/crontabs/root"
+
+    touch "$crontab"
+    grep -q "/usr/bin/dns_smart_probe.sh" "$crontab" && return
+
+    # Remove any stale entry then add cleanly
+    local tmp="${crontab}.tmp"
+    grep -v "dns_smart_probe.sh" "$crontab" > "$tmp" \
+        && printf '%s\n' "$entry" >> "$tmp" \
+        && mv "$tmp" "$crontab" \
+        || rm -f "$tmp"
+
+    /etc/init.d/cron restart 2>/dev/null || true
+}
+
+_cron_remove() {
+    local crontab="/etc/crontabs/root"
+    [ ! -f "$crontab" ] && return
+    grep -q "dns_smart_probe.sh" "$crontab" || return
+
+    local tmp="${crontab}.tmp"
+    grep -v "dns_smart_probe.sh" "$crontab" > "$tmp" \
+        && mv "$tmp" "$crontab" \
+        || rm -f "$tmp"
+
+    /etc/init.d/cron restart 2>/dev/null || true
+}
+
+start_service() {
+    # Clean any stale lock left from previous crash / reboot
+    rm -rf "$LOCKDIR"
+
+    # Ensure state directory
     mkdir -p /etc/dns-smart-routing
 
-    # Initialize default state file if missing or corrupt
-    if [ ! -f /etc/dns-smart-routing/state.json ] || [ ! -s /etc/dns-smart-routing/state.json ] || ! jq -e . /etc/dns-smart-routing/state.json >/dev/null 2>&1; then
-        echo '{"state":"NORMAL","fail_count":0,"ok_count":0,"last_change":0}' > /etc/dns-smart-routing/state.json
+    # Initialize state file if missing or corrupt
+    local sf="/etc/dns-smart-routing/state.json"
+    if [ ! -f "$sf" ] || [ ! -s "$sf" ] || ! jq -e . "$sf" >/dev/null 2>&1; then
+        printf '{"state":"NORMAL","fail_count":0,"ok_count":0,"last_change":0,"last_fail_time":0}\n' \
+            > "$sf"
     fi
 
-    # Ensure dynamic servers file exists for dnsmasq
+    # Ensure conf file exists so dnsmasq does not reject the servers-file directive
     touch /tmp/dnsmasq_dynamic_servers.conf
 
-    # Verify and add dnsmasq config line safely (no duplicates)
-    if [ -f /etc/dnsmasq.conf ]; then
-        if ! grep -q "servers-file=/tmp/dnsmasq_dynamic_servers.conf" /etc/dnsmasq.conf; then
-            sed -i '/servers-file=\/tmp\/dnsmasq_dynamic_servers.conf/d' /etc/dnsmasq.conf
-            echo "servers-file=/tmp/dnsmasq_dynamic_servers.conf" >> /etc/dnsmasq.conf
-            /etc/init.d/dnsmasq restart
-        fi
-    fi
+    # Idempotent dnsmasq integration
+    _dnsmasq_conf_add
+    /etc/init.d/dnsmasq restart 2>/dev/null || true
 
-    # Setup cron entry safely without duplicates
-    if [ -f /etc/crontabs/root ]; then
-        if ! grep -q "/usr/bin/dns_smart_probe.sh" /etc/crontabs/root; then
-            sed -i '/dns_smart_probe.sh/d' /etc/crontabs/root
-            echo "*/1 * * * * /usr/bin/dns_smart_probe.sh && /usr/bin/dns_smart_apply.sh" >> /etc/crontabs/root
-            /etc/init.d/cron restart
-        fi
-    fi
+    # Idempotent cron registration
+    _cron_add
 }
 
 stop_service() {
-    # Clean up cron entry safely
-    if [ -f /etc/crontabs/root ]; then
-        if grep -q "/usr/bin/dns_smart_probe.sh" /etc/crontabs/root; then
-            sed -i '/dns_smart_probe.sh/d' /etc/crontabs/root
-            /etc/init.d/cron restart
-        fi
-    fi
+    _cron_remove
 }
