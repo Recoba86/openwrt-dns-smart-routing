@@ -26,5 +26,6 @@ wget -O - https://raw.githubusercontent.com/Recoba86/openwrt-dns-smart-routing/m
 
 ## Safety Guarantees
 - POSIX-ash shell compatible (BusyBox safe).
+- Dependency: `jq` only (no netcat/nc required).
 - Non-recursive design (probing and applying processes are strictly decoupled).
 - Atomic configuration writing.

@@ -22,3 +22,8 @@
 ```bash
 wget -O - https://raw.githubusercontent.com/Recoba86/openwrt-dns-smart-routing/main/install.sh | sh
 ```
+
+## تضمین‌های امنیتی
+- سازگار با پوسته POSIX-ash (امن برای BusyBox).
+- نیاز به وابستگی: صرفاً ابزار `jq` (بدون نیاز به netcat/nc).
+- نوشتن اتمیک و ایمن تنظیمات در فایل سیستم.
