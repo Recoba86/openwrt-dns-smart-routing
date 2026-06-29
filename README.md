@@ -1,11 +1,11 @@
-# dns-smart-routing
+# dns-smart-routing (v2 Deployed)
 
-A lightweight DNS smart routing system for OpenWRT routers. It dynamically detects domain resolution issues (timeouts, basic DNS poisoning/hijacks) and adjusts dnsmasq upstream resolvers dynamically to maintain DNS reliability.
+A lightweight DNS smart routing system for OpenWRT routers. It dynamically detects domain resolution issues (timeouts, basic DNS poisoning/hijacks) and adjusts dnsmasq upstream resolvers dynamically through a 3-state machine.
 
 ## Problems Solved
-- **DNS Instability**: Unstable or intermittent DNS resolution in restricted networks.
+- **DNS Instability**: Unstable or intermittent DNS resolution in restricted networks (including Iran).
 - **DNS Timeout**: High latency or dropped queries when resolving external domains.
-- **DNS Poisoning**: Basic detection of tampered or hijacked DNS responses.
+- **DNS Poisoning**: Active detection of tampered or hijacked DNS responses via resolver cross-comparison.
 
 ## What it does NOT do
 - ❌ NOT a VPN
@@ -13,20 +13,10 @@ A lightweight DNS smart routing system for OpenWRT routers. It dynamically detec
 - ❌ Does NOT change routing tables
 - ❌ Does NOT modify firewall rules (iptables/nftables)
 
-## How it works
-
-```text
-  [ Cron Check (Every 1m) ]
-              │
-              ▼
-    [ Probe DNS Servers ] ──► (Resolves google.com, cloudflare.com, bamkhodro.com)
-              │
-              ▼
-   [ Hysteresis Decision ] ──► (4 Fails -> Xray/Local DNS; 8 Successes -> Default DNS)
-              │
-              ▼
-   [ SIGHUP Reload dnsmasq ] ──► (Atomic update of servers-file)
-```
+## How it works (3-State Model)
+- **CLEAN**: Default DNS path (empty override).
+- **DEGRADED**: Mixed fallback. Both public resolver and local resolver are listed in parallel (e.g. `server=1.1.1.1`, `server=8.8.8.8`, and `server=127.0.0.1#15353`).
+- **BROKEN**: Local DNS path only (`server=127.0.0.1#15353`).
 
 ## Installation
 
@@ -34,8 +24,3 @@ A lightweight DNS smart routing system for OpenWRT routers. It dynamically detec
 chmod +x install.sh
 ./install.sh
 ```
-
-## Safety Guarantees
-- Idempotent configuration management.
-- Cooldown period (120s minimum) to prevent route flapping.
-- Zero network interruptions (only dnsmasq configuration reload occurs).

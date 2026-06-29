@@ -3,6 +3,7 @@
 LOCKFILE="/tmp/dns-smart-routing.lock"
 STATE_DIR="/etc/dns-smart-routing"
 STATE_FILE="$STATE_DIR/state.json"
+FINGERPRINT_FILE="$STATE_DIR/runtime_fingerprint.json"
 
 # Concurrency lock protection
 if [ -f "$LOCKFILE" ]; then
@@ -30,70 +31,97 @@ fi
 
 # Initialize state JSON if missing or corrupt
 if [ ! -f "$STATE_FILE" ] || [ ! -s "$STATE_FILE" ] || ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
-    echo '{"state":"default","consecutive_fail":0,"consecutive_ok":0,"last_change":0}' > "$STATE_FILE"
+    echo '{"state":"CLEAN","consecutive_fail":0,"consecutive_ok":0,"last_change":0}' > "$STATE_FILE"
 fi
 
 local_dns=$(uci -q get dns-smart-routing.global.local_dns || echo "127.0.0.1#15353")
-local_ip=$(echo "$local_dns" | cut -d'#' -f1)
-local_port=$(echo "$local_dns" | cut -d'#' -f2)
+
+resolve_ips() {
+    domain=$1
+    resolver=$2
+    nslookup $domain $resolver 2>/dev/null | awk "
+        /Address/ {
+            if (\$0 ~ /$resolver/) next;
+            for (i=1; i<=NF; i++) {
+                if (\$i ~ /^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+\$/) {
+                    print \$i
+                }
+            }
+        }
+    " | sort | tr '\n' ',' | sed 's/,$//'
+}
 
 dns_query() {
-    resolver_ip=$1
-    resolver_port=$2
-    domain=$3
+    resolver=$1
+    domain=$2
     
     START=$(awk '{print $1}' /proc/uptime)
-    if [ -n "$resolver_port" ]; then
-        nslookup -port=$resolver_port $domain $resolver_ip >/dev/null 2>&1
-    else
-        nslookup $domain $resolver_ip >/dev/null 2>&1
-    fi
-    exit_code=$?
+    ips=$(resolve_ips "$domain" "$resolver")
     END=$(awk '{print $1}' /proc/uptime)
     
-    if [ $exit_code -eq 0 ]; then
-        echo $(echo "$START $END" | awk '{print int(($2 - $1) * 1000)}')
+    if [ -n "$ips" ]; then
+        latency_ms=$(echo "$START $END" | awk '{print int(($2 - $1) * 1000)}')
+        echo "$ips|$latency_ms"
     else
         echo "-1"
     fi
 }
 
 DOMAINS="google.com cloudflare.com bamkhodro.com"
-default_failed=0
+failed=0
+poisoned=0
 
 for domain in $DOMAINS; do
-    # Test fixed resolvers
-    lat1=$(dns_query "1.1.1.1" "" "$domain")
-    lat2=$(dns_query "8.8.8.8" "" "$domain")
-    lat_local=$(dns_query "$local_ip" "$local_port" "$domain")
+    res1=$(dns_query "1.1.1.1" "$domain")
+    res2=$(dns_query "8.8.8.8" "$domain")
     
-    # Evaluate default path health based on international domains
+    ips1=$(echo "$res1" | cut -d'|' -f1)
+    lat1=$(echo "$res1" | cut -d'|' -f2)
+    
+    ips2=$(echo "$res2" | cut -d'|' -f1)
+    lat2=$(echo "$res2" | cut -d'|' -f2)
+    
+    # 1. Liveness check
+    if { [ -z "$lat1" ] || [ "$lat1" -lt 0 ] || [ "$lat1" -gt 300 ]; } || { [ -z "$lat2" ] || [ "$lat2" -lt 0 ] || [ "$lat2" -gt 300 ]; }; then
+        if [ "$domain" != "bamkhodro.com" ]; then
+            failed=1
+        fi
+    fi
+    
+    # 2. Poisoning check (on international domains only)
     if [ "$domain" != "bamkhodro.com" ]; then
-        if { [ "$lat1" -lt 0 ] || [ "$lat1" -gt 300 ]; } && { [ "$lat2" -lt 0 ] || [ "$lat2" -gt 300 ]; }; then
-            default_failed=1
+        if [ "$ips1" != "$ips2" ] || [ -z "$ips1" ] || [ -z "$ips2" ]; then
+            poisoned=1
         fi
     fi
 done
 
 # Read current state
-current_state=$(jq -r ".state // \"default\"" "$STATE_FILE")
+current_state=$(jq -r ".state // \"CLEAN\"" "$STATE_FILE")
 consecutive_fail=$(jq -r ".consecutive_fail // 0" "$STATE_FILE")
 consecutive_ok=$(jq -r ".consecutive_ok // 0" "$STATE_FILE")
 last_change=$(jq -r ".last_change // 0" "$STATE_FILE")
 
-if [ $default_failed -eq 1 ]; then
-    consecutive_fail=$((consecutive_fail + 1))
+new_state="$current_state"
+
+if [ $poisoned -eq 1 ]; then
+    new_state="DEGRADED"
+    consecutive_fail=0
     consecutive_ok=0
 else
-    consecutive_ok=$((consecutive_ok + 1))
-    consecutive_fail=0
-fi
-
-new_state="$current_state"
-if [ $consecutive_fail -ge 4 ] && [ "$current_state" != "local" ]; then
-    new_state="local"
-elif [ $consecutive_ok -ge 8 ] && [ "$current_state" != "default" ]; then
-    new_state="default"
+    if [ $failed -eq 1 ]; then
+        consecutive_fail=$((consecutive_fail + 1))
+        consecutive_ok=0
+    else
+        consecutive_ok=$((consecutive_ok + 1))
+        consecutive_fail=0
+    fi
+    
+    if [ $consecutive_fail -ge 4 ] && [ "$current_state" != "BROKEN" ]; then
+        new_state="BROKEN"
+    elif [ $consecutive_ok -ge 8 ] && [ "$current_state" != "CLEAN" ]; then
+        new_state="CLEAN"
+    fi
 fi
 
 # Enforce Cooldown (120 seconds lock)
@@ -116,3 +144,16 @@ jq -n --arg st "$new_state" \
       > "$STATE_FILE.tmp"
 sync
 mv "$STATE_FILE.tmp" "$STATE_FILE"
+
+# Desync verification and repair trigger
+if [ -f "$FINGERPRINT_FILE" ]; then
+    expected_state=$(jq -r ".state // \"\"" "$FINGERPRINT_FILE")
+    saved_hash=$(jq -r ".config_hash // \"\"" "$FINGERPRINT_FILE")
+    current_hash=$(md5sum /tmp/dnsmasq_dynamic_servers.conf 2>/dev/null | awk '{print $1}')
+    
+    if [ "$expected_state" != "$new_state" ] || [ "$saved_hash" != "$current_hash" ]; then
+        /usr/bin/dns_smart_apply.sh
+    fi
+else
+    /usr/bin/dns_smart_apply.sh
+fi
