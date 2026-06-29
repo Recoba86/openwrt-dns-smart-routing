@@ -3,17 +3,17 @@
 START=95
 USE_PROCD=1
 
-LOCKDIR="/tmp/dns-smart-routing.lock"
+STATE_DIR="/etc/dns-smart-routing"
+LOCKFILE="/tmp/dns-smart-routing.lock"
+MARKER="$STATE_DIR/.installed"
 
 _dnsmasq_conf_add() {
     local line="servers-file=/tmp/dnsmasq_dynamic_servers.conf"
     local conf="/etc/dnsmasq.conf"
     [ ! -f "$conf" ] && return
-
-    # Already present — do nothing
     grep -q "$line" "$conf" && return
 
-    # Atomic write: remove any stale entries, append cleanly
+    # Atomic: strip old entries then append
     local tmp="${conf}.tmp"
     grep -v "servers-file=/tmp/dnsmasq_dynamic_servers.conf" "$conf" > "$tmp" \
         && printf '%s\n' "$line" >> "$tmp" \
@@ -22,19 +22,22 @@ _dnsmasq_conf_add() {
 }
 
 _cron_add() {
+    # Guard: skip if already installed
+    [ -f "$MARKER" ] && return
+
     local entry="*/1 * * * * /usr/bin/dns_smart_probe.sh && /usr/bin/dns_smart_apply.sh"
     local crontab="/etc/crontabs/root"
 
     touch "$crontab"
-    grep -q "/usr/bin/dns_smart_probe.sh" "$crontab" && return
-
-    # Remove any stale entry then add cleanly
+    # Remove any accidental stale entry, then add cleanly
     local tmp="${crontab}.tmp"
     grep -v "dns_smart_probe.sh" "$crontab" > "$tmp" \
         && printf '%s\n' "$entry" >> "$tmp" \
         && mv "$tmp" "$crontab" \
         || rm -f "$tmp"
 
+    # Write marker to prevent future duplicate writes
+    touch "$MARKER"
     /etc/init.d/cron restart 2>/dev/null || true
 }
 
@@ -48,31 +51,31 @@ _cron_remove() {
         && mv "$tmp" "$crontab" \
         || rm -f "$tmp"
 
+    rm -f "$MARKER"
     /etc/init.d/cron restart 2>/dev/null || true
 }
 
 start_service() {
-    # Clean any stale lock left from previous crash / reboot
-    rm -rf "$LOCKDIR"
+    # Remove stale lock left from crash or reboot
+    rm -f "$LOCKFILE"
 
-    # Ensure state directory
-    mkdir -p /etc/dns-smart-routing
+    mkdir -p "$STATE_DIR"
 
     # Initialize state file if missing or corrupt
-    local sf="/etc/dns-smart-routing/state.json"
+    local sf="$STATE_DIR/state.json"
     if [ ! -f "$sf" ] || [ ! -s "$sf" ] || ! jq -e . "$sf" >/dev/null 2>&1; then
-        printf '{"state":"NORMAL","fail_count":0,"ok_count":0,"last_change":0,"last_fail_time":0}\n' \
+        printf '{"state":"NORMAL","fail_count":0,"ok_count":0,"last_change":0,"last_fail_time":0,"pending_state":"","pending_count":0}\n' \
             > "$sf"
     fi
 
-    # Ensure conf file exists so dnsmasq does not reject the servers-file directive
+    # Ensure dnsmasq servers conf file exists
     touch /tmp/dnsmasq_dynamic_servers.conf
 
-    # Idempotent dnsmasq integration
+    # Idempotent dnsmasq integration — only restarts when line is actually missing
     _dnsmasq_conf_add
     /etc/init.d/dnsmasq restart 2>/dev/null || true
 
-    # Idempotent cron registration
+    # Idempotent cron installation (marker-guarded)
     _cron_add
 }
 
