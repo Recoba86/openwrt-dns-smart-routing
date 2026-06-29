@@ -1,39 +1,23 @@
-# v1.0.0 - Lightweight DNS Failover for OpenWRT
+# نسخه v1.0.0 - پایشگر پایداری دی‌ان‌اس هوشمند برای OpenWRT
 
-## What is this?
-`dns-smart-routing` is a small OpenWRT package that helps `dnsmasq` switch to a local DNS resolver when public DNS becomes unreliable.
+## خلاصه نسخه
+این نسخه اولین انتشار پایدار و سبک سیستم مسیریابی دی‌ان‌اس هوشمند (`dns-smart-routing`) بر مبنای میکرومدل دو وضعیتی است. این سیستم در زمان‌های ناپایداری دی‌ان‌اس عمومی، ترافیک درخواست‌های آدرس‌دهی روتر را بدون قطعی ارتباط به سمت یک دی‌ان‌اس محلی سوییچ می‌نماید.
 
-It is designed for users who already have a local DNS resolver such as Passwall/Xray DNS running on the router.
+## ویژگی‌ها
+- پایش سلامت دی‌ان‌اس عمومی با استفاده از سرورهای عمومی `1.1.1.1` و `8.8.8.8`.
+- مدل دو وضعیتی بسیار سبک (`NORMAL` و `FAILOVER`).
+- سوییچ به وضعیت دی‌ان‌اس محلی پس از ثبت **۲ خطای متوالی** جهت پایداری شبکه.
+- بازگشت فوری به وضعیت عادی تنها با ثبت **۱ پاسخ موفق**.
+- فاقد هرگونه لاگ شلوغ، فیلترهای تأخیردار یا مصرف بالای منابع.
+- وابستگی صرفاً به ابزار `jq` (بدون نیاز به netcat/nc).
 
-## Key Features
-- Minimal NORMAL / FAILOVER state model
-- 2 consecutive DNS failures required before FAILOVER
-- 1 successful DNS check restores NORMAL
-- Prevents false healthy detection by ignoring resolver/server IPs in nslookup output
-- Repairs missing or corrupted state.json automatically
-- Idempotent cron and dnsmasq integration
-- jq-only dependency
+## این پروژه چه کاری انجام نمی‌دهد
+- ❌ **فیلترشکن، پروکسی یا VPN نیست** و ترافیک را تونل نمی‌کند.
+- ❌ هیچ تغییری در فایروال یا جداول روتینگ شبکه ایجاد نمی‌کند.
+- ❌ جایگزینی برای Passwall/Xray نیست.
 
-## What it does not do
-- It is not a VPN
-- It is not a proxy
-- It does not tunnel traffic
-- It does not modify firewall rules
-- It does not modify routing tables
-- It does not bypass filtering by itself
-
-## Default behavior
-- Public DNS check:
-  - 1.1.1.1
-  - 8.8.8.8
-- Test domains:
-  - google.com
-  - cloudflare.com
-- Default local DNS failover target:
-  - 127.0.0.1#15353
-
-## Install
-Download the attached IPK file and install:
+## نصب سریع
+شما می‌توانید فایل `.ipk` ضمیمه شده را دانلود کرده و با دستورات زیر روی روتر نصب کنید:
 
 ```bash
 opkg update
@@ -43,13 +27,7 @@ opkg install /tmp/dns-smart-routing_1.0.0.ipk
 /etc/init.d/dns-smart-routing start
 ```
 
-## Verify
-```bash
-cat /etc/dns-smart-routing/state.json
-cat /tmp/dnsmasq_dynamic_servers.conf
-grep 'servers-file=/tmp/dnsmasq_dynamic_servers.conf' /etc/dnsmasq.conf
-grep 'dns_smart_probe.sh' /etc/crontabs/root
-```
+---
 
-## Notes
-This package only helps with DNS-related instability. It does not replace a VPN, proxy, or local resolver.
+## English Summary
+`dns-smart-routing` is a lightweight OpenWRT package designed to switch upstreams for `dnsmasq` to a local secure DNS resolver when public DNS queries fail. It uses a minimal 2-state micro model with a 2-consecutive failure threshold and recovers in a single success check, depending only on `jq`. It does not proxy, tunnel, or modify routing/firewall rules.

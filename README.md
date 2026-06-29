@@ -1,42 +1,46 @@
-# dns-smart-routing (Production Safe Edition)
+English documentation: [README_EN.md](README_EN.md)
 
-Lightweight DNS failover helper for OpenWRT.
+# dns-smart-routing برای OpenWRT
 
-This package helps OpenWRT users who experience unstable DNS access to some websites or services, particularly on restricted, heavily filtered, or unreliable networks (such as in Iran).
-
-## What problem it solves
-On unstable networks, default public DNS resolution (via WAN DNS) often experiences packet loss, high latency, or DNS poisoning/tampering. This package monitors connection health and automatically routes DNS queries to a local secure resolver when WAN DNS degrades, preventing browser timeouts and dropouts.
+یک پکیج سبک برای OpenWRT که در صورت ناپایداری DNS عمومی، dnsmasq را به DNS محلی (مانند Passwall/Xray DNS) سوییچ می‌کند.
 
 ---
 
-## What it DOES:
-- **DNS Health Monitoring**: Actively queries public DNS upstreams `1.1.1.1` and `8.8.8.8`.
-- **Automatic resolver switching**: Updates dnsmasq dynamic upstreams cleanly without dropping existing connections.
-- **Failover state preservation**: Employs a robust 2-state micro model (NORMAL & FAILOVER).
-
-## What it DOES NOT do:
-- ❌ **NOT a VPN or Proxy**: It does not tunnel, proxy, or redirect your device traffic.
-- ❌ **Does NOT bypass censorship directly**: It does not replace tools like Passwall, Xray, or shadow socks, but works alongside them.
-- ❌ **Does NOT modify system rules**: It makes zero changes to your OpenWRT firewall (iptables/nftables) or routing tables.
+## ۱. این پروژه چه مشکلی را حل می‌کند؟
+در برخی شبکه‌ها، مخصوصاً برای کاربران ایرانی، بسیاری از وب‌سایت‌ها و سرویس‌ها به دلیل اختلالات شدید DNS عمومی (دی‌ان‌اس‌های WAN) به سختی آدرس‌دهی (resolve) شده یا کاملاً ناپایدار باز می‌شوند. این ابزار به پایش مستمر سلامت دی‌ان‌اس پرداخته و با تغییر خودکار سرور دی‌ان‌اس روتر به حل‌کننده محلی در زمان بروز قطعی، اختلالات مرتبط با دی‌ان‌اس را حل می‌کند.
 
 ---
 
-## How it works (2-State Model)
-- **NORMAL**: WAN DNS is healthy. The dynamic dynamic servers-file is empty; DNS queries resolve through default WAN upstreams.
-- **FAILOVER**: Switches to FAILOVER state if public DNS queries fail for **2 consecutive cycles**. All DNS queries are then routed to the local secure resolver.
-- **Recovery**: Restores to NORMAL state immediately after **1 successful DNS check**.
+## ۲. این پکیج چه کاری انجام می‌دهد؟
+- **پایش وضعیت دی‌ان‌اس**: وضعیت پاسخ‌دهی سرورهای دی‌ان‌اس عمومی `1.1.1.1` و `8.8.8.8` را به صورت مداوم بررسی می‌کند.
+- **تغییر خودکار آدرس‌دهی**: در صورت بروز خرابی، فایل تنظیمات سرورهای dnsmasq را به صورت خودکار تغییر می‌دهد.
+- **بازگشت خودکار به وضعیت عادی**: در صورت برطرف شدن قطعی سرورهای عمومی، فوراً تنظیمات را به وضعیت پیش‌فرض بازمی‌گرداند.
+- **مدیریت فایل موقت**: سرور دی‌ان‌اس محلی را به فایل زیر اضافه می‌کند:
+  `/tmp/dnsmasq_dynamic_servers.conf`
 
 ---
 
-## Installation
+## ۳. این پکیج چه کاری انجام نمی‌دهد؟
+- ❌ **فیلترشکن، پروکسی یا تونل (VPN) نیست**.
+- ❌ ترافیک وب یا دستگاه‌های متصل به روتر را پروکسی یا تونل نمی‌کند.
+- ❌ تغییری در قوانین فایروال (firewall) یا جداول مسیریابی (routing tables) ثبت نمی‌کند.
+- ❌ به تنهایی ابزاری برای دور زدن فیلترینگ نیست و جایگزین Passwall/Xray به شمار نمی‌رود؛ صرفاً به پایداری حل آدرس‌های دی‌ان‌اس کمک می‌کند.
 
-### Method 1: Using the one-line installer (Recommended)
-```bash
-wget -O - https://raw.githubusercontent.com/Recoba86/openwrt-dns-smart-routing/main/install.sh | sh
-```
+---
 
-### Method 2: Manual IPK installation
-Download the built `.ipk` package from our [v1.0.0 Release Page](https://github.com/Recoba86/openwrt-dns-smart-routing/releases/tag/v1.0.0) and run:
+## ۴. پیش‌نیازها
+- سیستم‌عامل **OpenWRT**
+- سرویس **dnsmasq**
+- ابزار پردازش **jq**
+- یک حل‌کننده دی‌ان‌اس محلی اختیاری (مانندPasswall/Xray DNS) فعال روی پورت پیش‌فرض:
+  `127.0.0.1#15353`
+
+---
+
+## ۵. نصب
+
+شما می‌توانید پکیج را از [صفحه ریلیز v1.0.0](https://github.com/Recoba86/openwrt-dns-smart-routing/releases/tag/v1.0.0) دانلود کرده و به روش زیر نصب کنید:
+
 ```bash
 opkg update
 opkg install jq
@@ -47,46 +51,50 @@ opkg install /tmp/dns-smart-routing_1.0.0.ipk
 
 ---
 
-## Configuration
-The package uses standard OpenWRT unified configuration interface (UCI). The configuration file is located at `/etc/config/dns-smart-routing`:
+## ۶. تنظیمات
+فایل تنظیمات در مسیر `/etc/config/dns-smart-routing` قرار دارد و با دستورات استاندارد UCI قابل پیکربندی است:
 
-```ini
-config dns-smart-routing 'global'
-    option enabled '1'
-    option local_dns '127.0.0.1#15353'
+```bash
+uci set dns-smart-routing.global.local_dns='127.0.0.1#15353'
+uci commit dns-smart-routing
+/etc/init.d/dns-smart-routing restart
 ```
-- **enabled**: Set to `1` to enable, or `0` to disable the background probing.
-- **local_dns**: The target local resolver address. Defaults to `127.0.0.1#15353` (standard port for Xray/Passwall local DNS).
+دی‌ان‌اس محلی پیش‌فرض روی مقدار `127.0.0.1#15353` تنظیم شده است.
 
 ---
 
-## Usage & Verification
-To monitor status or manage the service, run:
+## ۷. مدل عملکرد (۲ وضعیتی)
+- **NORMAL**: دی‌ان‌اس عمومی فعال است و ترافیک از سرورهای WAN عبور می‌کند.
+- **FAILOVER**: در صورت بروز **۲ خطای متوالی** در اتصال دی‌ان‌اس عمومی، سیستم به دی‌ان‌اس محلی سوییچ می‌کند.
+- **بازگشت**: در صورت ثبت **۱ پاسخ موفق** از دی‌ان‌اس عمومی، بلافاصله وضعیت به حالت NORMAL بازمی‌گردد.
 
-### Check current state:
+---
+
+## ۸. بررسی وضعیت
+شما می‌توانید جهت تایید صحت عملکرد پکیج دستورات زیر را روی روتر اجرا کنید:
+
 ```bash
+# بررسی وضعیت فعلی سیستم
 cat /etc/dns-smart-routing/state.json
-```
-*(Outputs `{"state":"NORMAL"}` or `{"state":"FAILOVER"}`)*
 
-### Check active servers-file dynamic configuration:
-```bash
+# بررسی فایل موقت دی‌ان‌اس‌های پویا
 cat /tmp/dnsmasq_dynamic_servers.conf
-```
 
-### Check service status:
-```bash
-/etc/init.d/dns-smart-routing status
+# تایید وجود آدرس فایل در تنظیمات اصلی dnsmasq
+grep 'servers-file=/tmp/dnsmasq_dynamic_servers.conf' /etc/dnsmasq.conf
+
+# تایید ثبت پایشگر در کرون‌تاب روتر
+grep 'dns_smart_probe.sh' /etc/crontabs/root
 ```
 
 ---
 
-## Compatibility & Requirements
-- **OpenWRT**: Compatible with 19.07, 21.02, 22.03, 23.05 and newer.
-- **Resolver**: Configured to work natively with **dnsmasq**.
-- **Dependencies**: Requires `jq` package for state file JSON parser processing. No `netcat/nc` required.
+## ۹. نکات ایمنی
+- پکیج به هیچ وجه قوانین فایروال یا روتینگ سیستم را ویرایش نکرده و ترافیکی را پروکسی نمی‌کند.
+- تنها مداخله این سیستم، بازنشانی پویای فایل سرورهای کمکی dnsmasq است که به طور کامل امن و غیرمخرب است.
 
-## Safety & Stability
-- Zero firewall/routing dependencies.
-- Atomic state file writes to prevent filesystem corruption under sudden power loss.
-- Independent probing & applying cycles (no lock collisions or deadlocks).
+---
+
+## ۱۰. محدودیت‌ها
+- این ابزار فقط به مشکلات مرتبط با آدرس‌دهی دی‌ان‌اس (DNS resolution) و ناپایداری‌های مسیر آن کمک می‌کند.
+- در صورتی که قطعی از سمت فایروال مخابرات، فیلترینگ مبتنی بر IP، اختلالات SNI یا TLS باشد، این ابزار به تنهایی مشکل دسترسی را حل نمی‌کند.
