@@ -17,23 +17,29 @@ start_service() {
 
     # Verify and add dnsmasq config line safely (no duplicates)
     if [ -f /etc/dnsmasq.conf ]; then
-        sed -i '/servers-file=\/tmp\/dnsmasq_dynamic_servers.conf/d' /etc/dnsmasq.conf
-        echo "servers-file=/tmp/dnsmasq_dynamic_servers.conf" >> /etc/dnsmasq.conf
-        /etc/init.d/dnsmasq restart
+        if ! grep -q "servers-file=/tmp/dnsmasq_dynamic_servers.conf" /etc/dnsmasq.conf; then
+            sed -i '/servers-file=\/tmp\/dnsmasq_dynamic_servers.conf/d' /etc/dnsmasq.conf
+            echo "servers-file=/tmp/dnsmasq_dynamic_servers.conf" >> /etc/dnsmasq.conf
+            /etc/init.d/dnsmasq restart
+        fi
     fi
 
     # Setup cron entry safely without duplicates
     if [ -f /etc/crontabs/root ]; then
-        sed -i '/dns_smart_probe.sh/d' /etc/crontabs/root
-        echo "*/1 * * * * /usr/bin/dns_smart_probe.sh && /usr/bin/dns_smart_apply.sh" >> /etc/crontabs/root
-        /etc/init.d/cron restart
+        if ! grep -q "/usr/bin/dns_smart_probe.sh" /etc/crontabs/root; then
+            sed -i '/dns_smart_probe.sh/d' /etc/crontabs/root
+            echo "*/1 * * * * /usr/bin/dns_smart_probe.sh && /usr/bin/dns_smart_apply.sh" >> /etc/crontabs/root
+            /etc/init.d/cron restart
+        fi
     fi
 }
 
 stop_service() {
     # Clean up cron entry safely
     if [ -f /etc/crontabs/root ]; then
-        sed -i '/dns_smart_probe.sh/d' /etc/crontabs/root
-        /etc/init.d/cron restart
+        if grep -q "/usr/bin/dns_smart_probe.sh" /etc/crontabs/root; then
+            sed -i '/dns_smart_probe.sh/d' /etc/crontabs/root
+            /etc/init.d/cron restart
+        fi
     fi
 }

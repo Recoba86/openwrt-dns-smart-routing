@@ -2,6 +2,12 @@
 
 echo "Installing dns-smart-routing..."
 
+# Verify opkg is available
+if ! which opkg >/dev/null 2>&1; then
+    echo "Error: opkg is not available on this system. Aborting."
+    exit 1
+fi
+
 # Install dependencies only if missing
 if ! which jq >/dev/null 2>&1 || ! which nc >/dev/null 2>&1; then
     opkg update
