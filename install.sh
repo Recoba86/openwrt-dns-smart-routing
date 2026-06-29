@@ -2,9 +2,16 @@
 
 echo "Installing dns-smart-routing..."
 
-# Install dependencies
-opkg update
-opkg install jq netcat
+# Install dependencies only if missing
+if ! which jq >/dev/null 2>&1 || ! which nc >/dev/null 2>&1; then
+    opkg update
+    if ! which jq >/dev/null 2>&1; then
+        opkg install jq
+    fi
+    if ! which nc >/dev/null 2>&1; then
+        opkg install netcat
+    fi
+fi
 
 # Create directories
 mkdir -p /etc/dns-smart-routing

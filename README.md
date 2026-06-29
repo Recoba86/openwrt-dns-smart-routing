@@ -1,22 +1,24 @@
-# dns-smart-routing (v2 Deployed)
+# dns-smart-routing (Production Safe Edition)
 
-A lightweight DNS smart routing system for OpenWRT routers. It dynamically detects domain resolution issues (timeouts, basic DNS poisoning/hijacks) and adjusts dnsmasq upstream resolvers dynamically through a 3-state machine.
+A lightweight, stable OpenWRT DNS failover system. It detects default DNS resolution failures or high latency, and switches dnsmasq resolvers to a local DNS resolver (such as Xray/Passwall DNS) to prevent connectivity dropouts.
 
-## Problems Solved
-- **DNS Instability**: Unstable or intermittent DNS resolution in restricted networks (including Iran).
-- **DNS Timeout**: High latency or dropped queries when resolving external domains.
-- **DNS Poisoning**: Active detection of tampered or hijacked DNS responses via resolver cross-comparison.
+## Features & 2-State System
+- **NORMAL**: Queries use default WAN DNS servers (dnsmasq dynamic override file is empty).
+- **FAILOVER**: Queries are directed to the local DNS resolver at `127.0.0.1#15353`.
+- **Transitions**: Switches to `FAILOVER` after 4 consecutive failure cycles (latency >300ms or resolver timeout). Returns to `NORMAL` after 8 consecutive successes.
+- **Flapping Protection**: Enforces a 120-second cooldown period between state changes.
 
-## What it does NOT do
+## What this project is NOT
 - ❌ NOT a VPN
 - ❌ NOT a proxy or bypass tool
-- ❌ Does NOT change routing tables
-- ❌ Does NOT modify firewall rules (iptables/nftables)
+- ❌ Does NOT bypass filtering
+- ❌ Does NOT modify routing tables or firewall rules
 
-## How it works (3-State Model)
-- **CLEAN**: Default DNS path (empty override).
-- **DEGRADED**: Mixed fallback. Both public resolver and local resolver are listed in parallel (e.g. `server=1.1.1.1`, `server=8.8.8.8`, and `server=127.0.0.1#15353`).
-- **BROKEN**: Local DNS path only (`server=127.0.0.1#15353`).
+## Safety Guarantees
+- POSIX ash shell compatible.
+- Concurrency locking to prevent duplicate cron runs.
+- Non-recursive design (probing and applying processes are strictly decoupled).
+- Atomic configuration writing.
 
 ## Installation
 

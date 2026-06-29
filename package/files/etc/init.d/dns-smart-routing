@@ -9,7 +9,7 @@ start_service() {
 
     # Initialize default state file if missing or corrupt
     if [ ! -f /etc/dns-smart-routing/state.json ] || [ ! -s /etc/dns-smart-routing/state.json ] || ! jq -e . /etc/dns-smart-routing/state.json >/dev/null 2>&1; then
-        echo '{"state":"CLEAN","consecutive_fail":0,"consecutive_ok":0,"last_change":0}' > /etc/dns-smart-routing/state.json
+        echo '{"state":"NORMAL","fail_count":0,"ok_count":0,"last_change":0}' > /etc/dns-smart-routing/state.json
     fi
 
     # Ensure dynamic servers file exists for dnsmasq
