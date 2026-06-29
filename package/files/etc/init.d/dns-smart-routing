@@ -4,52 +4,58 @@ START=95
 USE_PROCD=1
 
 STATE_DIR="/etc/dns-smart-routing"
-MARKER="$STATE_DIR/.installed"
-DNSMASQ_RELOAD_MARKER="/tmp/dnsmasq-dns-smart-reloaded"
 
 _dnsmasq_conf_add() {
     local line="servers-file=/tmp/dnsmasq_dynamic_servers.conf"
     local conf="/etc/dnsmasq.conf"
     [ ! -f "$conf" ] && return 1
-    grep -q "$line" "$conf" && return 0
 
+    local count
+    count=$(grep -c "$line" "$conf" 2>/dev/null || echo "0")
+    if [ "$count" -eq 1 ]; then
+        # Exactly one exists, no change needed
+        return 0
+    fi
+
+    # Rewrite conf file: remove any lines containing servers-file=/tmp/dnsmasq_dynamic_servers.conf, then append exactly one
     local tmp="${conf}.tmp"
     grep -v "servers-file=/tmp/dnsmasq_dynamic_servers.conf" "$conf" > "$tmp" 2>/dev/null \
         && printf '%s\n' "$line" >> "$tmp" 2>/dev/null \
         && mv "$tmp" "$conf" 2>/dev/null \
         || { rm -f "$tmp" 2>/dev/null; return 1; }
-    return 2
+    return 2 # 2 means modified
 }
 
 _cron_add() {
-    [ -f "$MARKER" ] && return 0
-
     local entry="*/1 * * * * /usr/bin/dns_smart_probe.sh && /usr/bin/dns_smart_apply.sh"
     local crontab="/etc/crontabs/root"
     touch "$crontab" 2>/dev/null
 
     local tmp="${crontab}.tmp"
-    grep -v "dns_smart_probe.sh" "$crontab" > "$tmp" 2>/dev/null \
-        && printf '%s\n' "$entry" >> "$tmp" 2>/dev/null \
-        && mv "$tmp" "$crontab" 2>/dev/null \
-        || { rm -f "$tmp" 2>/dev/null; return 1; }
+    grep -v "dns_smart_probe.sh" "$crontab" > "$tmp" 2>/dev/null
+    printf '%s\n' "$entry" >> "$tmp" 2>/dev/null
 
-    touch "$MARKER" 2>/dev/null
-    /etc/init.d/cron restart 2>/dev/null || true
+    if cmp -s "$tmp" "$crontab" 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+    else
+        mv "$tmp" "$crontab" 2>/dev/null
+        /etc/init.d/cron restart 2>/dev/null || true
+    fi
 }
 
 _cron_remove() {
     local crontab="/etc/crontabs/root"
     [ ! -f "$crontab" ] && return
-    grep -q "dns_smart_probe.sh" "$crontab" || return
 
     local tmp="${crontab}.tmp"
-    grep -v "dns_smart_probe.sh" "$crontab" > "$tmp" 2>/dev/null \
-        && mv "$tmp" "$crontab" 2>/dev/null \
-        || rm -f "$tmp" 2>/dev/null
+    grep -v "dns_smart_probe.sh" "$crontab" > "$tmp" 2>/dev/null
 
-    rm -f "$MARKER" 2>/dev/null
-    /etc/init.d/cron restart 2>/dev/null || true
+    if cmp -s "$tmp" "$crontab" 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+    else
+        mv "$tmp" "$crontab" 2>/dev/null
+        /etc/init.d/cron restart 2>/dev/null || true
+    fi
 }
 
 start_service() {
@@ -58,8 +64,20 @@ start_service() {
     # Clear temp counters
     rm -f /tmp/dns_smart_fail_count 2>/dev/null
 
+    # Validate and repair state if missing, empty, invalid JSON, or not in NORMAL/FAILOVER
     local sf="$STATE_DIR/state.json"
+    local is_corrupt=0
     if [ ! -f "$sf" ] || [ ! -s "$sf" ]; then
+        is_corrupt=1
+    else
+        local state_val
+        state_val=$(jq -r '.state' "$sf" 2>/dev/null)
+        if [ $? -ne 0 ] || [ "$state_val" != "NORMAL" -a "$state_val" != "FAILOVER" ]; then
+            is_corrupt=1
+        fi
+    fi
+
+    if [ $is_corrupt -eq 1 ]; then
         printf '{"state":"NORMAL"}\n' > "$sf" 2>/dev/null
     fi
 
@@ -67,11 +85,8 @@ start_service() {
 
     _dnsmasq_conf_add
     local add_rc=$?
-    if [ $add_rc -eq 2 ] && [ ! -f "$DNSMASQ_RELOAD_MARKER" ]; then
-        touch "$DNSMASQ_RELOAD_MARKER" 2>/dev/null
+    if [ $add_rc -eq 2 ]; then
         /etc/init.d/dnsmasq restart 2>/dev/null || true
-    elif [ ! -f "$DNSMASQ_RELOAD_MARKER" ]; then
-        touch "$DNSMASQ_RELOAD_MARKER" 2>/dev/null
     fi
 
     _cron_add
@@ -79,6 +94,5 @@ start_service() {
 
 stop_service() {
     _cron_remove
-    rm -f "$DNSMASQ_RELOAD_MARKER" 2>/dev/null
     rm -f /tmp/dns_smart_fail_count 2>/dev/null
 }

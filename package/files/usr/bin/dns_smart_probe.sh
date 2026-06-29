@@ -9,17 +9,35 @@ mkdir -p "$STATE_DIR" 2>/dev/null
 enabled=$(uci -q get dns-smart-routing.global.enabled 2>/dev/null || echo "1")
 [ "$enabled" != "1" ] && exit 0
 
-# Init state if missing
+# Validate and repair state if missing, empty, invalid JSON, or not in NORMAL/FAILOVER
+is_corrupt=0
 if [ ! -f "$STATE_FILE" ] || [ ! -s "$STATE_FILE" ]; then
+    is_corrupt=1
+else
+    state_val=$(jq -r '.state' "$STATE_FILE" 2>/dev/null)
+    if [ $? -ne 0 ] || [ "$state_val" != "NORMAL" -a "$state_val" != "FAILOVER" ]; then
+        is_corrupt=1
+    fi
+fi
+
+if [ $is_corrupt -eq 1 ]; then
     printf '{"state":"NORMAL"}\n' > "$STATE_FILE" 2>/dev/null
 fi
 
 _get_valid_ips() {
+    local out="$1"
+    local resolver="$2"
     local ip
-    for ip in $(echo "$1" | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' 2>/dev/null); do
+    for ip in $(echo "$out" | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}' 2>/dev/null); do
         case "$ip" in
-            0.0.0.0|127.*|255.255.255.255) continue ;;
-            *) echo "$ip" && return 0 ;;
+            0.0.0.0|127.*|255.255.255.255|1.1.1.1|8.8.8.8) continue ;;
+            *)
+                if [ -n "$resolver" ] && [ "$ip" = "$resolver" ]; then
+                    continue
+                fi
+                echo "$ip"
+                return 0
+                ;;
         esac
     done
     return 1
@@ -36,8 +54,8 @@ for domain in $DOMAINS; do
 
     ips1=""
     ips2=""
-    [ $rc1 -eq 0 ] && ips1=$(_get_valid_ips "$out1")
-    [ $rc2 -eq 0 ] && ips2=$(_get_valid_ips "$out2")
+    [ $rc1 -eq 0 ] && ips1=$(_get_valid_ips "$out1" "1.1.1.1")
+    [ $rc2 -eq 0 ] && ips2=$(_get_valid_ips "$out2" "8.8.8.8")
 
     if [ -z "$ips1" ] || [ -z "$ips2" ]; then
         failed=1
