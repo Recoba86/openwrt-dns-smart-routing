@@ -1,51 +1,73 @@
 #!/bin/sh
 
 LOCKFILE="/tmp/dns-smart-routing.lock"
+BOOTID_FILE="/tmp/dns-smart-routing.bootid"
 STATE_DIR="/etc/dns-smart-routing"
 STATE_FILE="$STATE_DIR/state.json"
 FAIL_EXPIRE_SECS=300
 NOISE_WINDOW_SECS=120
 
-# ── HYBRID SAFE LOCK ─────────────────────────────────────────────────────────
-# Primary:   PID-file noclobber write
-# Secondary: inode existence check
-# Tertiary:  /proc/<pid>/cmdline validation
-# Any ambiguity → exit gracefully (fail-safe)
+# ── BOOT ID ───────────────────────────────────────────────────────────────────
+# Derived from system boot epoch (stable for entire boot session).
+# /tmp is tmpfs → cleared on reboot → old locks auto-invalid.
+# Bootid adds protection against fast-reboot PID reuse edge case.
+_current_bootid() {
+    local now uptime_int
+    now=$(date +%s 2>/dev/null || echo "0")
+    uptime_int=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null || echo "0")
+    echo $((now - uptime_int))
+}
+
+# Ensure bootid file exists (resilient against init not having run yet)
+if [ ! -f "$BOOTID_FILE" ]; then
+    _current_bootid > "$BOOTID_FILE" 2>/dev/null || true
+fi
+SYSTEM_BOOTID=$(cat "$BOOTID_FILE" 2>/dev/null || _current_bootid)
+
+# ── BOOT-AWARE HYBRID LOCK ────────────────────────────────────────────────────
+# Lock format: "<PID>:<bootid>"
+# Valid ONLY when: PID alive + cmdline matches + bootid matches current boot.
+# Any mismatch → stale → remove and retry.
 
 _acquire_lock() {
     if [ -f "$LOCKFILE" ]; then
-        local lpid
-        lpid=$(cat "$LOCKFILE" 2>/dev/null)
+        local lock_content lpid lock_bootid
+        lock_content=$(cat "$LOCKFILE" 2>/dev/null)
+        lpid="${lock_content%%:*}"
+        lock_bootid="${lock_content##*:}"
 
-        if [ -n "$lpid" ]; then
-            if kill -0 "$lpid" 2>/dev/null; then
-                # PID alive — validate via cmdline
-                local cmdline
-                cmdline=$(cat "/proc/$lpid/cmdline" 2>/dev/null | tr '\0' ' ')
-                if echo "$cmdline" | grep -q "dns_smart_probe"; then
-                    return 1  # Confirmed live — exit
-                fi
-                # Alive but not our process — any ambiguity → fail-safe exit
-                return 1
+        # Bootid mismatch → always stale (different boot or corrupted)
+        if [ "$lock_bootid" != "$SYSTEM_BOOTID" ]; then
+            rm -f "$LOCKFILE" 2>/dev/null
+        elif [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then
+            # Same boot, PID alive → validate via cmdline
+            local cmdline
+            cmdline=$(cat "/proc/$lpid/cmdline" 2>/dev/null | tr '\0' ' ')
+            if echo "$cmdline" | grep -q "dns_smart_probe"; then
+                return 1  # Live confirmed process — exit gracefully
             fi
+            # Alive but not our script → ambiguous → fail-safe exit
+            return 1
+        else
+            # Same boot, PID dead → remove stale lock
+            rm -f "$LOCKFILE" 2>/dev/null
         fi
-        # PID dead or unreadable — remove stale lock
-        rm -f "$LOCKFILE" 2>/dev/null
     fi
 
     # Atomic create via noclobber
     set -C
-    ( echo "$$" > "$LOCKFILE" ) 2>/dev/null
+    ( printf '%s:%s\n' "$$" "$SYSTEM_BOOTID" > "$LOCKFILE" ) 2>/dev/null
     local rc=$?
     set +C
 
-    # Write failure = read-only fs or inode exhaustion → exit gracefully
+    # Write failure = ro-fs or inode exhaustion → exit gracefully
     [ $rc -ne 0 ] && return 1
 
-    # Race validation: confirm our PID is what was written
-    local written
+    # Race validation: confirm our PID:bootid was written
+    local written written_pid
     written=$(cat "$LOCKFILE" 2>/dev/null)
-    [ "$written" != "$$" ] && return 1
+    written_pid="${written%%:*}"
+    [ "$written_pid" != "$$" ] && return 1
 
     return 0
 }
@@ -57,7 +79,7 @@ fi
 # Guarantee lockfile cleanup on all exit paths
 trap 'rm -f "$LOCKFILE"; exit' INT TERM EXIT
 
-mkdir -p "$STATE_DIR" 2>/dev/null || { rm -f "$LOCKFILE"; exit 0; }
+mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 
 # ── UCI CONFIG ───────────────────────────────────────────────────────────────
 enabled=$(uci -q get dns-smart-routing.global.enabled 2>/dev/null || echo "1")
@@ -75,80 +97,66 @@ elif ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
     _init_state
 fi
 
-# ── DNS VALIDATION: IPv4 with bad-IP filtering (no awk) ──────────────────────
-# Returns 0 if a valid, non-loopback, non-broadcast IPv4 is found in output
-_dns_valid_ip() {
+# ── DNS IP VALIDATION (no awk; bad-IP filtering) ─────────────────────────────
+# Returns space-separated valid IPs from nslookup output, or empty string.
+_get_valid_ips() {
     local out="$1"
-    local found=0
+    local result=""
     local ip
     for ip in $(echo "$out" | grep -E -o '([0-9]{1,3}\.){3}[0-9]{1,3}'); do
         case "$ip" in
             0.0.0.0|127.*|255.255.255.255) continue ;;
-            *) found=1; break ;;
+            *) result="$result $ip" ;;
         esac
     done
-    return $((1 - found))
+    echo "$result"
 }
 
-# DNS probe: validated by exit code AND IP presence
-dns_probe_ok() {
-    local resolver=$1
-    local domain=$2
-    local out
-    out=$(nslookup "$domain" "$resolver" 2>/dev/null)
-    [ $? -ne 0 ] && return 1
-    _dns_valid_ip "$out"
+# Returns 0 (consensus) when BOTH resolvers return at least one valid IP.
+# Degraded = one resolver returns valid IPs, the other returns none (hijack/poison).
+# Exact IP matching is NOT used: CDN Anycast deliberately returns different IPs
+# per resolver (geoDNS). The signal we detect is a resolver going dark/poisoned.
+_resolvers_agree() {
+    local ips1="$1" ips2="$2"
+    [ -n "$ips1" ] && [ -n "$ips2" ] && return 0
+    return 1
 }
 
-# ── LATENCY: 3-run MIN (spike resistant) ─────────────────────────────────────
-_uptime_ms() {
-    awk '{printf "%d", $1 * 1000}' /proc/uptime 2>/dev/null || echo "0"
-}
-
-probe_min_latency() {
-    local resolver=$1
-    local domain=$2
-    local min=99999
-    local i=1
-    while [ $i -le 3 ]; do
-        local t0 t1 lat
-        t0=$(_uptime_ms)
-        if dns_probe_ok "$resolver" "$domain"; then
-            t1=$(_uptime_ms)
-            lat=$((t1 - t0))
-            [ $lat -lt $min ] && min=$lat
-        else
-            echo "-1"
-            return
-        fi
-        i=$((i + 1))
-    done
-    echo "$min"
-}
-
-# ── EVALUATION LOOP ───────────────────────────────────────────────────────────
+# ── EVALUATION LOOP: availability-based consensus model ──────────────────────
+# Domain OK only if BOTH resolvers return at least one valid non-poisoned IP
+# AND at least one resolver responds within 400ms.
+# Degraded (one resolver dark/poisoned) → treat as failure candidate.
 DOMAINS="google.com cloudflare.com"
-RESOLVERS="1.1.1.1 8.8.8.8"
 failed=0
+now=$(date +%s 2>/dev/null || echo "0")
 
 for domain in $DOMAINS; do
-    domain_ok=0
-    for resolver in $RESOLVERS; do
-        lat=$(probe_min_latency "$resolver" "$domain")
-        if [ "$lat" != "-1" ] && [ "$lat" -le 400 ] 2>/dev/null; then
-            domain_ok=1
-            break
-        fi
-    done
-    if [ $domain_ok -eq 0 ]; then
+    t0=$(awk '{printf "%d", $1 * 1000}' /proc/uptime 2>/dev/null || echo "0")
+    out1=$(nslookup "$domain" "1.1.1.1" 2>/dev/null)
+    t1=$(awk '{printf "%d", $1 * 1000}' /proc/uptime 2>/dev/null || echo "0")
+    out2=$(nslookup "$domain" "8.8.8.8" 2>/dev/null)
+    t2=$(awk '{printf "%d", $1 * 1000}' /proc/uptime 2>/dev/null || echo "0")
+
+    ips1=$(_get_valid_ips "$out1")
+    ips2=$(_get_valid_ips "$out2")
+
+    # Latency gate: at least one resolver must respond under 400ms
+    lat1=$((t1 - t0))
+    lat2=$((t2 - t1))
+    if [ $lat1 -gt 400 ] && [ $lat2 -gt 400 ]; then
+        failed=1
+        break
+    fi
+
+    # Consensus: both resolvers must return at least one valid IP.
+    # One resolver returning nothing while the other succeeds = degraded/poisoned.
+    if ! _resolvers_agree "$ips1" "$ips2"; then
         failed=1
         break
     fi
 done
 
-# ── READ CURRENT STATE (safe fallbacks on every field) ───────────────────────
-now=$(date +%s 2>/dev/null || echo "0")
-
+# ── READ CURRENT STATE (safe fallbacks) ──────────────────────────────────────
 current_state=$(jq -r    '.state           // "NORMAL"' "$STATE_FILE" 2>/dev/null || echo "NORMAL")
 fail_count=$(jq -r        '.fail_count      // 0'        "$STATE_FILE" 2>/dev/null || echo "0")
 ok_count=$(jq -r          '.ok_count        // 0'        "$STATE_FILE" 2>/dev/null || echo "0")
@@ -159,7 +167,7 @@ pending_count=$(jq -r     '.pending_count   // 0'         "$STATE_FILE" 2>/dev/n
 last_eval_result=$(jq -r  '.last_eval_result // -1'       "$STATE_FILE" 2>/dev/null || echo "-1")
 last_eval_time=$(jq -r    '.last_eval_time  // 0'         "$STATE_FILE" 2>/dev/null || echo "0")
 
-# Sanitize all integers
+# Sanitize integers
 fail_count=$(printf '%d'       "$fail_count"       2>/dev/null || echo "0")
 ok_count=$(printf '%d'         "$ok_count"         2>/dev/null || echo "0")
 last_change=$(printf '%d'      "$last_change"      2>/dev/null || echo "0")
@@ -168,21 +176,21 @@ pending_count=$(printf '%d'    "$pending_count"    2>/dev/null || echo "0")
 last_eval_result=$(printf '%d' "$last_eval_result" 2>/dev/null || echo "-1")
 last_eval_time=$(printf '%d'   "$last_eval_time"   2>/dev/null || echo "0")
 
-# ── NOISE FILTER: 2 consecutive identical results within NOISE_WINDOW_SECS ───
-# Result is "confirmed" only if previous eval had same value within time window
+# ── SOFT CONSENSUS FILTER (noise immunity) ────────────────────────────────────
+# Commit evaluation only when 2 consecutive identical results occur within
+# NOISE_WINDOW_SECS. Single samples are discarded (no state update).
 eval_confirmed=0
 if [ "$last_eval_result" -eq "$failed" ] 2>/dev/null; then
     time_since=$((now - last_eval_time))
-    if [ $time_since -le $NOISE_WINDOW_SECS ] && [ $time_since -ge 0 ]; then
+    if [ $time_since -ge 0 ] && [ $time_since -le $NOISE_WINDOW_SECS ]; then
         eval_confirmed=1
     fi
 fi
 
-# Always record this evaluation
 last_eval_result=$failed
 last_eval_time=$now
 
-# If not confirmed — persist eval fields only and exit safely
+# Not confirmed → persist only eval metadata, no state update
 if [ $eval_confirmed -eq 0 ]; then
     TMP_STATE="${STATE_FILE}.tmp"
     jq -n \
@@ -210,7 +218,7 @@ else
     fail_count=0
 fi
 
-# ── TIME DECAY: expire stale failures ─────────────────────────────────────────
+# ── TIME DECAY: expire stale failure count after FAIL_EXPIRE_SECS ─────────────
 if [ $failed -eq 0 ] && [ $fail_count -gt 0 ] && [ $last_fail_time -gt 0 ]; then
     age=$((now - last_fail_time))
     [ $age -ge $FAIL_EXPIRE_SECS ] && fail_count=0
@@ -221,9 +229,8 @@ desired_state="$current_state"
 [ $fail_count -ge 4 ] && [ "$current_state" != "FAILOVER" ] && desired_state="FAILOVER"
 [ $ok_count   -ge 8 ] && [ "$current_state" != "NORMAL"   ] && desired_state="NORMAL"
 
-# ── HYSTERESIS: 2 evaluation windows before committing ───────────────────────
+# ── HYSTERESIS: 2 consecutive evaluation windows before committing ────────────
 new_state="$current_state"
-
 if [ "$desired_state" != "$current_state" ]; then
     if [ "$pending_state" = "$desired_state" ]; then
         pending_count=$((pending_count + 1))
@@ -231,7 +238,6 @@ if [ "$desired_state" != "$current_state" ]; then
         pending_state="$desired_state"
         pending_count=1
     fi
-
     if [ $pending_count -ge 2 ]; then
         elapsed=$((now - last_change))
         if [ $elapsed -ge 120 ]; then
@@ -247,7 +253,7 @@ else
 fi
 
 # ── ATOMIC STATE WRITE (filesystem safety mode) ───────────────────────────────
-# On any write failure: skip silently (current state preserved on disk)
+# On any write/mv failure: exit 0 silently — current state preserved on disk.
 TMP_STATE="${STATE_FILE}.tmp"
 jq -n \
     --arg  st  "$new_state" \
@@ -262,7 +268,4 @@ jq -n \
     '{state:$st,fail_count:$fc,ok_count:$oc,last_change:$lc,last_fail_time:$lf,pending_state:$ps,pending_count:$pc,last_eval_result:$er,last_eval_time:$et}' \
     > "$TMP_STATE" 2>/dev/null || exit 0
 
-mv "$TMP_STATE" "$STATE_FILE" 2>/dev/null || {
-    rm -f "$TMP_STATE" 2>/dev/null
-    exit 0
-}
+mv "$TMP_STATE" "$STATE_FILE" 2>/dev/null || { rm -f "$TMP_STATE" 2>/dev/null; exit 0; }
