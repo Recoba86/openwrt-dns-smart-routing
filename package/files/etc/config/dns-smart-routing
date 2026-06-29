@@ -1,0 +1,4 @@
+config dns-smart-routing 'global'
+	option enabled '1'
+	option local_dns '127.0.0.1#15353'
+	option check_interval '60'
