@@ -2,12 +2,17 @@
 
 STATE_DIR="/etc/dns-smart-routing"
 STATE_FILE="$STATE_DIR/state.json"
+FAIL_COUNT_FILE="/tmp/dns_smart_fail_count"
 
 mkdir -p "$STATE_DIR" 2>/dev/null
 
-# Read UCI configuration
 enabled=$(uci -q get dns-smart-routing.global.enabled 2>/dev/null || echo "1")
 [ "$enabled" != "1" ] && exit 0
+
+# Init state if missing
+if [ ! -f "$STATE_FILE" ] || [ ! -s "$STATE_FILE" ]; then
+    printf '{"state":"NORMAL"}\n' > "$STATE_FILE" 2>/dev/null
+fi
 
 _get_valid_ips() {
     local ip
@@ -40,14 +45,31 @@ for domain in $DOMAINS; do
     fi
 done
 
+# Read current state
+current_state=$(jq -r '.state // "NORMAL"' "$STATE_FILE" 2>/dev/null || echo "NORMAL")
+new_state="$current_state"
+
 if [ $failed -eq 1 ]; then
-    new_state="FAILOVER"
+    # Increment failures count
+    fail_count=$(cat "$FAIL_COUNT_FILE" 2>/dev/null || echo "0")
+    fail_count=$((fail_count + 1))
+    echo "$fail_count" > "$FAIL_COUNT_FILE" 2>/dev/null
+
+    if [ $fail_count -ge 2 ] && [ "$current_state" != "FAILOVER" ]; then
+        new_state="FAILOVER"
+    fi
 else
-    new_state="NORMAL"
+    # Recovery on 1 OK
+    rm -f "$FAIL_COUNT_FILE" 2>/dev/null
+    if [ "$current_state" != "NORMAL" ]; then
+        new_state="NORMAL"
+    fi
 fi
 
-# Atomic state write
-TMP_STATE="${STATE_FILE}.tmp"
-printf '{"state":"%s"}\n' "$new_state" > "$TMP_STATE" 2>/dev/null \
-    && mv "$TMP_STATE" "$STATE_FILE" 2>/dev/null \
-    || rm -f "$TMP_STATE" 2>/dev/null
+# Write state atomically if changed
+if [ "$new_state" != "$current_state" ]; then
+    TMP_STATE="${STATE_FILE}.tmp"
+    printf '{"state":"%s"}\n' "$new_state" > "$TMP_STATE" 2>/dev/null \
+        && mv "$TMP_STATE" "$STATE_FILE" 2>/dev/null \
+        || rm -f "$TMP_STATE" 2>/dev/null
+fi

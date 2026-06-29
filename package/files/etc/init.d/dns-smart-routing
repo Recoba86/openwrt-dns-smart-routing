@@ -55,6 +55,9 @@ _cron_remove() {
 start_service() {
     mkdir -p "$STATE_DIR" 2>/dev/null
 
+    # Clear temp counters
+    rm -f /tmp/dns_smart_fail_count 2>/dev/null
+
     local sf="$STATE_DIR/state.json"
     if [ ! -f "$sf" ] || [ ! -s "$sf" ]; then
         printf '{"state":"NORMAL"}\n' > "$sf" 2>/dev/null
@@ -77,4 +80,5 @@ start_service() {
 stop_service() {
     _cron_remove
     rm -f "$DNSMASQ_RELOAD_MARKER" 2>/dev/null
+    rm -f /tmp/dns_smart_fail_count 2>/dev/null
 }
