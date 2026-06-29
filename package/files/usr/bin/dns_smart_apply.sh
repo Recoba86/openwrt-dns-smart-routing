@@ -27,10 +27,14 @@ fi
 if [ ! -f "$CONF_FILE" ] || ! cmp -s "$TMP_FILE" "$CONF_FILE"; then
     mv "$TMP_FILE" "$CONF_FILE"
     
-    # Reload dnsmasq safely by iterating PIDs
-    for pid in $(pidof dnsmasq); do
-        kill -HUP "$pid" 2>/dev/null || true
-    done
+    # Reload dnsmasq safely
+    if which killall >/dev/null 2>&1; then
+        killall -HUP dnsmasq 2>/dev/null || true
+    else
+        for pid in $(pidof dnsmasq); do
+            kill -HUP "$pid" 2>/dev/null || true
+        done
+    fi
 else
     rm -f "$TMP_FILE"
 fi

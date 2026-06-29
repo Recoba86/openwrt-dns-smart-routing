@@ -6,12 +6,19 @@ STATE_FILE="$STATE_DIR/state.json"
 
 # Concurrency lock protection
 if [ -f "$LOCKFILE" ]; then
-    now=$(date +%s)
-    lock_time=$(date -r "$LOCKFILE" +%s 2>/dev/null || stat -c %Y "$LOCKFILE" 2>/dev/null || echo 0)
-    elapsed=$((now - lock_time))
-    if [ $elapsed -lt 120 ]; then
-        echo "Lock active (age ${elapsed}s). Overlapping run prevented."
-        exit 0
+    lock_pid=$(cat "$LOCKFILE" 2>/dev/null)
+    if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+        rm -f "$LOCKFILE"
+    else
+        now=$(date +%s)
+        lock_time=$(date -r "$LOCKFILE" +%s 2>/dev/null || stat -c %Y "$LOCKFILE" 2>/dev/null || echo 0)
+        elapsed=$((now - lock_time))
+        if [ $elapsed -lt 120 ]; then
+            echo "Lock active (age ${elapsed}s). Overlapping run prevented."
+            exit 0
+        else
+            rm -f "$LOCKFILE"
+        fi
     fi
 fi
 
@@ -63,11 +70,11 @@ for domain in $DOMAINS; do
     fi
 done
 
-# Read current state
-current_state=$(jq -r ".state // \"NORMAL\"" "$STATE_FILE")
-fail_count=$(jq -r ".fail_count // 0" "$STATE_FILE")
-ok_count=$(jq -r ".ok_count // 0" "$STATE_FILE")
-last_change=$(jq -r ".last_change // 0" "$STATE_FILE")
+# Read current state safely
+current_state=$(jq -r ".state // \"NORMAL\"" "$STATE_FILE" 2>/dev/null || echo "NORMAL")
+fail_count=$(jq -r ".fail_count // 0" "$STATE_FILE" 2>/dev/null || echo "0")
+ok_count=$(jq -r ".ok_count // 0" "$STATE_FILE" 2>/dev/null || echo "0")
+last_change=$(jq -r ".last_change // 0" "$STATE_FILE" 2>/dev/null || echo "0")
 
 if [ $failed -eq 1 ]; then
     fail_count=$((fail_count + 1))
@@ -101,6 +108,6 @@ jq -n --arg st "$new_state" \
       --argjson oc "$ok_count" \
       --argjson lc "$last_change" \
       '{state: $st, fail_count: $fc, ok_count: $oc, last_change: $lc}' \
-      > "$STATE_FILE.tmp"
+      > "$STATE_FILE.tmp" 2>/dev/null
 sync
 mv "$STATE_FILE.tmp" "$STATE_FILE"

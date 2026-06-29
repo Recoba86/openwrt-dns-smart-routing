@@ -4,6 +4,9 @@ START=95
 USE_PROCD=1
 
 start_service() {
+    # Clean stale lockfile on startup
+    rm -f /tmp/dns-smart-routing.lock
+
     # Ensure directories exist
     mkdir -p /etc/dns-smart-routing
 

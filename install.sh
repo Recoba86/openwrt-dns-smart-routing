@@ -8,15 +8,10 @@ if ! which opkg >/dev/null 2>&1; then
     exit 1
 fi
 
-# Install dependencies only if missing
-if ! which jq >/dev/null 2>&1 || ! which nc >/dev/null 2>&1; then
+# Install jq dependency only if missing
+if ! which jq >/dev/null 2>&1; then
     opkg update
-    if ! which jq >/dev/null 2>&1; then
-        opkg install jq
-    fi
-    if ! which nc >/dev/null 2>&1; then
-        opkg install netcat
-    fi
+    opkg install jq
 fi
 
 # Create directories
@@ -42,11 +37,11 @@ if [ -f /etc/dnsmasq.conf ]; then
     echo "servers-file=/tmp/dnsmasq_dynamic_servers.conf" >> /etc/dnsmasq.conf
 fi
 
-# Enable and start service
+# Enable and start service (handles cron entry registration idempotently)
 /etc/init.d/dns-smart-routing enable
 /etc/init.d/dns-smart-routing start
 
-# Restart dnsmasq once
+# Restart dnsmasq once at the end
 /etc/init.d/dnsmasq restart
 
 echo "dns-smart-routing installed successfully!"
