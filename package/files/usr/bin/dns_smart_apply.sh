@@ -8,6 +8,11 @@ if [ ! -f "$STATE_FILE" ]; then
     exit 0
 fi
 
+# Validate JSON before parsing
+if ! jq -e . "$STATE_FILE" >/dev/null 2>&1; then
+    exit 0
+fi
+
 state=$(jq -r ".state // \"default\"" "$STATE_FILE")
 local_dns=$(uci -q get dns-smart-routing.global.local_dns || echo "127.0.0.1#15353")
 
@@ -18,10 +23,14 @@ if [ "$state" = "local" ]; then
     echo "server=$local_dns" >> "$TMP_FILE"
 fi
 
-# Compare and replace if different
+# Compare and replace atomically if different
 if [ ! -f "$CONF_FILE" ] || ! cmp -s "$TMP_FILE" "$CONF_FILE"; then
     mv "$TMP_FILE" "$CONF_FILE"
-    kill -HUP $(pidof dnsmasq)
+    
+    # Reload dnsmasq safely by iterating PIDs
+    for pid in $(pidof dnsmasq); do
+        kill -HUP "$pid" 2>/dev/null || true
+    done
 else
     rm -f "$TMP_FILE"
 fi

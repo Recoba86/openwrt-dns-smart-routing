@@ -7,8 +7,8 @@ start_service() {
     # Ensure directories exist
     mkdir -p /etc/dns-smart-routing
 
-    # Initialize default state file if missing
-    if [ ! -f /etc/dns-smart-routing/state.json ] || [ ! -s /etc/dns-smart-routing/state.json ]; then
+    # Initialize default state file if missing or corrupt
+    if [ ! -f /etc/dns-smart-routing/state.json ] || [ ! -s /etc/dns-smart-routing/state.json ] || ! jq -e . /etc/dns-smart-routing/state.json >/dev/null 2>&1; then
         echo '{"state":"default","consecutive_fail":0,"consecutive_ok":0,"last_change":0}' > /etc/dns-smart-routing/state.json
     fi
 
@@ -17,27 +17,23 @@ start_service() {
 
     # Verify and add dnsmasq config line safely (no duplicates)
     if [ -f /etc/dnsmasq.conf ]; then
-        if ! grep -q "servers-file=/tmp/dnsmasq_dynamic_servers.conf" /etc/dnsmasq.conf; then
-            echo "servers-file=/tmp/dnsmasq_dynamic_servers.conf" >> /etc/dnsmasq.conf
-            /etc/init.d/dnsmasq restart
-        fi
+        sed -i '/servers-file=\/tmp\/dnsmasq_dynamic_servers.conf/d' /etc/dnsmasq.conf
+        echo "servers-file=/tmp/dnsmasq_dynamic_servers.conf" >> /etc/dnsmasq.conf
+        /etc/init.d/dnsmasq restart
     fi
 
     # Setup cron entry safely without duplicates
     if [ -f /etc/crontabs/root ]; then
-        if ! grep -q "/usr/bin/dns_smart_probe.sh" /etc/crontabs/root; then
-            echo "*/1 * * * * /usr/bin/dns_smart_probe.sh && /usr/bin/dns_smart_apply.sh" >> /etc/crontabs/root
-            /etc/init.d/cron restart
-        fi
+        sed -i '/dns_smart_probe.sh/d' /etc/crontabs/root
+        echo "*/1 * * * * /usr/bin/dns_smart_probe.sh && /usr/bin/dns_smart_apply.sh" >> /etc/crontabs/root
+        /etc/init.d/cron restart
     fi
 }
 
 stop_service() {
     # Clean up cron entry safely
     if [ -f /etc/crontabs/root ]; then
-        if grep -q "/usr/bin/dns_smart_probe.sh" /etc/crontabs/root; then
-            sed -i '/dns_smart_probe.sh/d' /etc/crontabs/root
-            /etc/init.d/cron restart
-        fi
+        sed -i '/dns_smart_probe.sh/d' /etc/crontabs/root
+        /etc/init.d/cron restart
     fi
 }
